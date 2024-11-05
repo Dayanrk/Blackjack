@@ -72,11 +72,11 @@ class BlackjackEnv(gym.Env):
         """
         Plays the dealer's hand according to the rules.
         """
-        dealer_value = self.value_hands(self.dealer)
+        self.dealer_value = self.value_hands(self.dealer)
         
-        while dealer_value < 17:
+        while self.dealer_value < 17:
             self.dealer.append(self.deck.pop())
-            dealer_value = self.value_hands(self.dealer)
+            self.dealer_value = self.value_hands(self.dealer)
         
     def player_vs_dealer(self, reward, player_value, dealer_value):
         """
@@ -121,32 +121,39 @@ class BlackjackEnv(gym.Env):
         next_player = False
 
         if not dealer_playing:
-            value = self.value_hands(hand)
 
             if action == Actions.HIT:
                 hand.append(self.deck.pop())
                 value = self.value_hands(hand)
                 if value < 21:
-                    print("Continue with this hand, value less than 21")
+                    reward = (21 - value) / 21
                 elif value == 21:
                     print("Value 21 reached, move to the next hand")
-                    reward = 1
+                    reward = (21 - value) / 21
+                    next_player = True
+                elif value > 21:
+                    print("Value over 21 reached, move to the next hand")
+                    reward = -self.hand_players[f'player_{self.current_player_index}']['bet']
                     next_player = True
 
             elif action == Actions.STAND:
-                print("Stand chosen, move to the next hand")
+                value = self.value_hands(hand)
+                reward = (21 - value) / 21
                 next_player = True
 
             elif action == Actions.SPLIT and len(hand) == 2 and hand[0] == hand[1]:
                 if not self.hand_players[f'player_{self.current_player_index}']['split']:
                     self.handle_split() 
                 else: 
-                    reward = -1  # Negative reward for an invalid action
+                    #Deal with unpossibility to split with mask 
+                    reward = -self.hand_players[f'player_{self.current_player_index}']['bet']
 
             elif action == Actions.DOUBLE:
                 print("Double chosen, draw a card and move to the next player")
                 hand.append(self.deck.pop())
-                reward = 1 if self.value_hands(hand) <= 21 else -1
+                value = self.value_hands(hand)
+                reward = (21 - value) / 21 \
+                    if self.value_hands(hand) <= 21 else -self.hand_players[f'player_{self.current_player_index}']['bet']
                 next_player = True
 
             # Move to the next hand or player as appropriate
@@ -154,24 +161,22 @@ class BlackjackEnv(gym.Env):
 
             # Return the state and end information
             return self._get_obs(), reward, False, False
-
         else:
             # Handle the dealer's turn after all players have finished
             print("The dealer is now playing")
             self.play_dealer_hand()
             
             # Calculate the rewards for each player
-            dealer_value = self.value_hands(self.dealer)
             for i in range(self.number_players):
                 player = f'player_{i}'
                 if self.hand_players[player]['split']:
                     for hand in self.hand_players[player]['hands']:
-                        reward = self.player_vs_dealer(reward, self.value_hands(hand), dealer_value)
+                        reward = self.player_vs_dealer(reward, self.value_hands(hand), self.dealer_value)
                         self.total_rewards += reward
                 else:
-                    reward = self.player_vs_dealer(reward, self.value_hands(hand), dealer_value)
+                    reward = self.player_vs_dealer(reward, self.value_hands(hand), self.dealer_value)
                     self.total_rewards += reward
-            return self._get_obs(), self.total_rewards, True, False  # Episode finished
+            return self._get_obs(), self.total_rewards, False, False  
 
     def advance_hand_or_player(self, next_player):
         """
