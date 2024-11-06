@@ -2,6 +2,7 @@ import gym
 from gym import spaces
 from enum import Enum
 import numpy as np
+import random
 
 class Actions(Enum):
     HIT = 0
@@ -10,7 +11,6 @@ class Actions(Enum):
     DOUBLE = 3
     
 class BlackjackEnv(gym.Env):
-    #Changer reward method to return the gain of the agent
     
     def __init__(self, number_deck):
         super().__init__()
@@ -18,6 +18,7 @@ class BlackjackEnv(gym.Env):
         self.current_player_index = 0
         self.current_hand_index = 0
         self.dealer = []
+        self.wallet = 1000
         self.number_players = 0
         self.total_rewards = 0
         self.hand_players = {f'player_{i}': \
@@ -27,20 +28,54 @@ class BlackjackEnv(gym.Env):
         self.info = {card: self.deck.count(card) for card in set(self.deck)}
         self.len_deck = 13 * 4 * number_deck
         self.action_space = spaces.Discrete(4)
-        self.observation_space = spaces.Box(low=0, high=31, shape=(2,), dtype=np.int32)
-        self.observation_game = {
-            "dealer": self.dealer,
-            "players": self.hand_players,
+        self.observation_space = spaces.Dict({
+            "dealer":  spaces.Dict({
+                'value': spaces.Box(low=0, high=31, shape=(1,), dtype=np.int32),
+                #hand represent card hand 
+                'hand': spaces.Box(low=0, high=11, shape=(10,), dtype=np.int32)
+                }),
+            "len_deck": spaces.Discrete(self.len_deck + 1),  # Nombre de cartes restantes dans le deck
+            "info": spaces.Dict({  # Comptage des cartes restantes
+                card: spaces.Discrete(52 * self.number_deck + 1) for card in set(self.deck)
+            }),
+            "players": spaces.Dict({  # Informations détaillées pour chaque joueur
+                f'player_{i}': spaces.Dict({
+                    "hands": spaces.Box(low=0, high=31, shape=(5,), dtype=np.int32),  # Valeur de chaque main (on suppose jusqu'à 5 mains max)
+                    "value": spaces.Box(low=0, high=31, shape=(1,), dtype=np.int32),  # Valeur de la main active
+                    "nb_ace": spaces.Discrete(10),  # Nombre d'as (jusqu'à 4 ou 5 possibles par main)
+                    "split": spaces.Discrete(2),  # 1 si la main est splittée, sinon 0
+                    "bet": spaces.Box(low=0, high=500, shape=(1,), dtype=np.int32),  # Montant du pari (peut être ajusté selon les limites)
+                    "current_player": spaces.Discrete(2),  # Indique si c'est le joueur actif
+                    "hand_playing": spaces.Discrete(2),  # Index de la main active (jusqu'à 2)
+                    "blackjack": spaces.Discrete(2)  # 1 si le joueur a un blackjack, sinon 0
+                }) for i in range(6) # Prend en charge jusqu'à 6 joueurs
+            }),
+            "wallet": spaces.Box(low=0, high=1e6, shape=(1,), dtype=np.float32)
+        })
+        
+        self.observation_game =  {
+            "dealer": {'value': 0, 'hand': []},
+            "len_deck": self.len_deck,
             "info": self.info,
-            "len_deck": self.len_deck
+            "players": self.hand_players,
+            "wallet": self.wallet
         }
+
+    def shuffle_deck(self):
+        """
+        Mélange le deck de cartes.
+        """
+        random.shuffle(self.deck)
+        return self.deck
+    
+    def time_to_shuffle(self):
+        return len(self.deck) < self.len_deck // 2
 
     def reset():
         print('reset')
-        # restart a new game and shuffle the cards
     
     def _get_obs(self):
-        return self.observation_game()
+        return self.observation_game
     
     def value_hands(self, hands):
         """
@@ -77,6 +112,8 @@ class BlackjackEnv(gym.Env):
         while self.dealer_value < 17:
             self.dealer.append(self.deck.pop())
             self.dealer_value = self.value_hands(self.dealer)
+        if self.time_to_shuffle(): 
+            self.shuffle_deck()
         
     def player_vs_dealer(self, reward, player_value, dealer_value):
         """
@@ -101,7 +138,47 @@ class BlackjackEnv(gym.Env):
             reward = -self.hand_players[f'player_{self.current_player_index}']['bet']
         return reward
         
+    
+    def initialize_new_game(self):    
+        """
+        Initializes a new game by shuffling the deck, dealing the initial hands, and setting the initial player.
 
+        """
+        for i in range(2):
+            for player in self.hand_players:
+                # distribuer carte de chaque joueur 
+                self.hand_players[player]['hands'].append(self.deck.pop())
+            self.dealer.append(self.deck.pop())
+                
+    def end_round(self):
+        """
+        Calcule la récompense finale pour chaque joueur, renvoie l'observation finale et réinitialise le jeu pour une nouvelle manche.
+        """
+        self.total_rewards = 0  # Réinitialise les récompenses totales pour la manche
+        
+        # Calcule les récompenses pour chaque joueur en fonction de la main du croupier
+        self.play_dealer_hand()  # Le dealer joue sa main finale
+        
+        for i in range(self.number_players):
+            player_key = f'player_{i}'
+            player_info = self.hand_players[player_key]
+            
+            # Calcule les gains pour chaque main (s'il y a eu un split, chaque main est évaluée individuellement)
+            if player_info['split']:
+                for hand in player_info['hands']:
+                    reward = self.player_vs_dealer(0, self.value_hands(hand), self.dealer_value)
+                    self.total_rewards += reward
+            else:
+                reward = self.player_vs_dealer(0, player_info['value'], self.dealer_value)
+                self.total_rewards += reward
+            
+            # Ajuste le portefeuille (wallet) en fonction du gain ou de la perte
+            self.wallet += self.total_rewards
+
+            actual_state = self._get_obs()
+        # Prépare pour une nouvelle manche
+        self.reset_game()  # Méthode pour réinitialiser les mains et le deck
+        return actual_state, self.total_rewards, True, False
     def play_single_hand(self, action, hand):
         """
         Manages the transition to the next state for the player's current hand after an action.
@@ -176,7 +253,7 @@ class BlackjackEnv(gym.Env):
                 else:
                     reward = self.player_vs_dealer(reward, self.value_hands(hand), self.dealer_value)
                     self.total_rewards += reward
-            return self._get_obs(), self.total_rewards, False, False  
+            return self._get_obs(), self.total_rewards, True  , False  
 
     def advance_hand_or_player(self, next_player):
         """
@@ -209,59 +286,48 @@ class BlackjackEnv(gym.Env):
         self.hand_players[current_player]['split'] = True
         print(f"Hand split for {current_player}: new hands {new_hand1} and {new_hand2}")
 
-
-    def step(self, action):        
+    def get_action_mask(self):
         """
-        Takes an action and returns the results as observation, reward, and end state.
-        
-        Parameters:
-        - action: action chosen by the agent.
-        
-        Returns:
-        - observation: the state after the action
-        - reward: reward following the action
-        - done: indicates if the episode is over
-        - truncated: indicates if the episode was truncated
+        Crée un masque binaire pour les actions valides et invalides en fonction de l’état actuel de la main du joueur.
         """
+        mask = np.ones(self.action_space.n)  # Par défaut, toutes les actions sont valides
+        
+        # Récupérer la main actuelle du joueur
         current_hand = self.hand_players[f'player_{self.current_player_index}']['hands'][self.current_hand_index]
-        new_state, reward, done, truncated = self.play_single_hand(action, self.value_hands(current_hand), current_hand)
+        value = self.value_hands(current_hand)
         
-        return new_state, reward, done, truncated
+        # Vérifier les conditions d’invalidité pour chaque action
+        if value >= 21:
+            # Si la main est 21 ou plus, "HIT" et "DOUBLE" sont invalides
+            mask[Actions.HIT.value] = 0
+            mask[Actions.DOUBLE.value] = 0
 
-        
-        
-        
-        
+        # "SPLIT" est invalide si les cartes sont différentes ou si le joueur a déjà splitté
+        if len(current_hand) != 2 or current_hand[0] != current_hand[1] or self.hand_players[f'player_{self.current_player_index}']['split']:
+            mask[Actions.SPLIT.value] = 0
+
+        # "DOUBLE" peut être restreint aux cas où le joueur n’a pas encore tiré de cartes supplémentaires
+        if len(current_hand) > 2:
+            mask[Actions.DOUBLE.value] = 0
     
-    
-    
-    
-    
-    
-    
-    
-    
-    # def initialize_hands(self):
-    #     number_players = self.set_player()
-    #     self.dealer = []
-    #     for i in range(2):
-    #         self.dealer.append(self.deck.pop(0))
-    #         for i in range(number_players):
-    #             card_hitten = self.deck.pop(0)
-    #             self.hand_players[f'player_{i}']['hands'].append(card_hitten)
-    #             self.hand_players[f'player_{i}']['value'] = self.value_hands(self.hand_players[f'player_{i}']['hands'])
-    #             self.hand_players[f'player_{i}']['split'] = False
-    #             self.hand_players[f'player_{i}']['nb_ace'] = self.hand_players[f'player_{i}']['hands'].count(11)  
-         
-    
-    # def set_player(self):
-    #     number_players = 0 
-    #     while number_players < 1 or number_players > 7:
-    #         number_players = int(input('How many players? '))
-    #     for i in range(number_players):
-    #         bet = 0
-    #         while bet not in [5, 10, 25, 50, 75, 100]:
-    #             bet = int(input(f'Player {i+1}, place your bet [5, 10, 25, 50, 75, 100]: '))
-    #             self.hand_players[f'player_{i}']['bet'] = bet
-    #             self.wallet -= bet
-    #     return number_players
+        return mask
+
+    def step(self, action):
+        """
+        Exécute une action valide et retourne les résultats.
+        """
+        # Appliquer le masque d’actions
+        mask = self.get_action_mask()
+
+        # Vérifier si l’action choisie est valide
+        if mask[action] == 0:
+            # Si l'action est invalide, appliquer une pénalité ou ignorer l'action
+            reward = -5  # Pénalité pour l’action invalide
+            print("Action invalide choisie.")
+            return self._get_obs(), reward, False, False
+
+        # Si l'action est valide, exécute la main normalement
+        current_hand = self.hand_players[f'player_{self.current_player_index}']['hands'][self.current_hand_index]
+        new_state, reward, done, truncated = self.play_single_hand(action, current_hand)
+
+        return new_state, reward, done, truncated
