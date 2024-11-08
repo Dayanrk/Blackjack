@@ -9,24 +9,25 @@ class Actions(Enum):
     STAND = 1
     SPLIT = 2
     DOUBLE = 3
-    
+
+
 class BlackjackEnv(gym.Env):
-    
     def __init__(self, number_deck):
         super().__init__()
         self.number_deck = number_deck
         self.current_player_index = 0
         self.current_hand_index = 0
-        self.dealer = []
         self.wallet = 1000
-        self.number_players = 0
+        self.number_players = 6
         self.total_rewards = 0
+        self.dealer = []
         self.hand_players = {f'player_{i}': \
             {'hands': [], 'value': 0, 'nb_ace': 0, 'split': False,
-             'bet': 0, 'current_player': self.current_player_index == i, 'hand_playing': 0, 'reward':0, 'blackjack': False} for i in range(6)}
+             'bet': 0, 'current_player': self.current_player_index == i, 'hand_playing': 0, 'reward':0, 'blackjack': False} for i in range(self.number_players)}
         self.deck = [2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 10, 10, 11] * 4 * self.number_deck 
         self.info = {card: self.deck.count(card) for card in set(self.deck)}
         self.len_deck = 13 * 4 * number_deck
+        self.dealer_playing = self.current_player_index == self.number_players
         self.action_space = spaces.Discrete(4)
         self.observation_space = spaces.Dict({
             "dealer":  spaces.Dict({
@@ -52,30 +53,18 @@ class BlackjackEnv(gym.Env):
             }),
             "wallet": spaces.Box(low=0, high=1e6, shape=(1,), dtype=np.float32)
         })
-        
-        self.observation_game =  {
-            "dealer": {'value': 0, 'hand': []},
-            "len_deck": self.len_deck,
-            "info": self.info,
-            "players": self.hand_players,
-            "wallet": self.wallet
-        }
-
     def shuffle_deck(self):
-        """
-        Mélange le deck de cartes.
-        """
-        random.shuffle(self.deck)
-        return self.deck
-    
+            """
+            Mélange le deck de cartes.
+            """
+            random.shuffle(self.deck)
+            return self.deck
     def time_to_shuffle(self):
         return len(self.deck) < self.len_deck // 2
-
+    
     def reset():
         print('reset')
-    
-    def _get_obs(self):
-        return self.observation_game
+
     
     def value_hands(self, hands):
         """
@@ -102,7 +91,7 @@ class BlackjackEnv(gym.Env):
             num_aces -= 1
         
         return value
-    
+
     def play_dealer_hand(self):
         """
         Plays the dealer's hand according to the rules.
@@ -114,7 +103,7 @@ class BlackjackEnv(gym.Env):
             self.dealer_value = self.value_hands(self.dealer)
         if self.time_to_shuffle(): 
             self.shuffle_deck()
-        
+    
     def player_vs_dealer(self, reward, player_value, dealer_value):
         """
         Determines the reward for a player based on the comparison of the player's hand value with the dealer's hand value.
@@ -144,12 +133,49 @@ class BlackjackEnv(gym.Env):
         Initializes a new game by shuffling the deck, dealing the initial hands, and setting the initial player.
 
         """
-        for i in range(2):
+        self.dealer = []
+        self.hand_players = {f'player_{i}': \
+            {'hands': [], 'value': 0, 'nb_ace': 0, 'split': False,
+             'bet': 0, 'current_player': self.current_player_index == i, 'hand_playing': 0, 'reward':0, 'blackjack': False} for i in range(self.number_players)}
+        for _ in range(2):
             for player in self.hand_players:
                 # distribuer carte de chaque joueur 
                 self.hand_players[player]['hands'].append(self.deck.pop())
             self.dealer.append(self.deck.pop())
-                
+
+    def _get_obs(self):          
+        player_hands = [] 
+        value_hands = []
+        hands_split = []
+        bets = []
+        dealer = []
+        normalized_wallet = self.wallet / 1e6  # Exemple de normalisation
+        for i in range(self.number_players):
+            player_hands.append(self.hand_players[f'player_{i}']['hands'])
+            value_hands.append(self.hand_players[f'player_{i}']['value'])
+            hands_split.append(1 if self.hand_players[f'player_{i}']['split'] else 0)
+            bets.append(self.hand_players[f'player_{i}']['bet'])
+        
+        if not self.dealer_playing:
+            dealer.append(self.dealer[0])
+            dealer.append(self.value_hands([self.dealer[0]]))
+
+        else: 
+            dealer.append(self.dealer)
+            dealer.append(self.value_hands(self.dealer))    
+        
+        return np.array([
+            dealer,
+            len(self.deck),
+            list(self.info.values()),  # Assurez-vous que self.info est une liste plate
+            player_hands,
+            self.current_player_index,
+            value_hands,
+            hands_split,
+            bets,
+            normalized_wallet
+        ])
+         
     def end_round(self):
         """
         Calcule la récompense finale pour chaque joueur, renvoie l'observation finale et réinitialise le jeu pour une nouvelle manche.
@@ -194,10 +220,9 @@ class BlackjackEnv(gym.Env):
         - truncated: boolean indicating if the episode was truncated
         """
         reward = 0
-        dealer_playing = self.current_player_index == self.number_players
         next_player = False
 
-        if not dealer_playing:
+        if not self.dealer_playing:
 
             if action == Actions.HIT:
                 hand.append(self.deck.pop())
